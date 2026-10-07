@@ -13,15 +13,17 @@ import {
   Download,
   BookOpen,
   Cpu,
-  Database
+  Database,
+  GitCommit
 } from 'lucide-react';
 import { CODE_FILES, DIRECTORY_TREE_ASCII } from './data/govAuditCode';
 import { CodeViewer } from './components/CodeViewer';
 import { ArchitectureDiagram } from './components/ArchitectureDiagram';
 import { ContractSimulator } from './components/ContractSimulator';
+import { BpmnWorkflowViewer } from './components/BpmnWorkflowViewer';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<string>('overview');
+  const [activeTab, setActiveTab] = useState<string>('bpmn');
   const [selectedFileId, setSelectedFileId] = useState<string>('contrato-pendente');
   const [copiedTree, setCopiedTree] = useState(false);
 
@@ -87,6 +89,18 @@ export default function App() {
           >
             <Layers className="w-4 h-4" />
             <span>Visão Arquitetural DDD</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('bpmn')}
+            className={`px-3 py-2 rounded-lg transition-colors flex items-center gap-2 whitespace-nowrap ${
+              activeTab === 'bpmn'
+                ? 'bg-slate-800 text-emerald-400 font-semibold'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+            }`}
+          >
+            <GitCommit className="w-4 h-4 text-emerald-400" />
+            <span>Motor BPMN / Ciclo de Vida</span>
           </button>
 
           <button
@@ -192,6 +206,11 @@ export default function App() {
               </div>
             </div>
           </div>
+        )}
+
+        {/* TAB BPMN: MOTOR DE PROCESSOS */}
+        {activeTab === 'bpmn' && (
+          <BpmnWorkflowViewer />
         )}
 
         {/* TAB 2: ÁRVORE DE DIRETÓRIOS */}

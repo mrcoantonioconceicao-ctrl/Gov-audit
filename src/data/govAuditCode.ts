@@ -932,6 +932,711 @@ public class DddArchitectureTest {
                 "java..",
                 "org.springframework.."
             ).because("A apresentação só deve interagir com Use Cases e DTOs da camada Application.");
+}
+`
+  },
+  {
+    id: 'domain-service',
+    name: 'CicloVidaContratoDomainService.java',
+    path: 'src/main/java/gov/audit/domain/service/CicloVidaContratoDomainService.java',
+    category: 'domain',
+    language: 'java',
+    description: 'Domain Service encapsulando regras do ciclo de vida público: transições entre EM_ELABORACAO, ANALISE_JURIDICA, EMPENHADO, APROVADO_TRIBUNAL e VIGENTE.',
+    content: `package gov.audit.domain.service;
+
+import gov.audit.domain.exception.InvarianteVioladaException;
+import gov.audit.domain.model.contrato.ContratoPendente;
+import gov.audit.domain.model.contrato.StatusContratoCicloVida;
+import gov.audit.domain.model.vo.NotaEmpenho;
+import gov.audit.domain.model.vo.ParecerJuridico;
+import gov.audit.domain.repository.ContratoPendenteRepository;
+import gov.audit.domain.repository.SistemaOrcamentarioPort;
+import gov.audit.domain.repository.TribunalContasPort;
+
+import java.time.LocalDate;
+import java.util.Objects;
+
+/**
+ * DOMAIN SERVICE: CicloVidaContratoDomainService
+ * 
+ * Gerencia operações e invariantes que não pertencem exclusivamente a uma única entidade,
+ * orquestrando a conformidade com a Lei 14.133/2021 (Nova Lei de Licitações)
+ * e o Decreto 93.872/1986 (Execução Orçamentária e Financeira).
+ * 
+ * Estados do Ciclo de Vida:
+ *  1. EM_ELABORACAO       -> Criação do termo de referência e minuta contratual.
+ *  2. ANALISE_JURIDICA    -> Exame de legalidade pela Advocacia Pública / AGU / Procuradoria.
+ *  3. EMPENHADO           -> Emissão prévia da Nota de Empenho (SIAFI/SIAFEM).
+ *  4. APROVADO_TRIBUNAL   -> Homologação de conformidade prévia pelo Tribunal de Contas (TCU/TCE).
+ *  5. VIGENTE             -> Publicação oficial no PNCP e início de vigência jurídica.
+ */
+public class CicloVidaContratoDomainService {
+
+    private final ContratoPendenteRepository contratoRepository;
+    private final SistemaOrcamentarioPort siafiPort;
+    private final TribunalContasPort tribunalContasPort;
+
+    public CicloVidaContratoDomainService(
+            ContratoPendenteRepository contratoRepository,
+            SistemaOrcamentarioPort siafiPort,
+            TribunalContasPort tribunalContasPort
+    ) {
+        this.contratoRepository = Objects.requireNonNull(contratoRepository, "Repositório não pode ser nulo");
+        this.siafiPort = Objects.requireNonNull(siafiPort, "Port orçamentário não pode ser nulo");
+        this.tribunalContasPort = Objects.requireNonNull(tribunalContasPort, "Port do Tribunal não pode ser nulo");
+    }
+
+    /**
+     * Submete o contrato da fase interna de elaboração para parecer jurídico prévio (Art. 53 da Lei 14.133/2021).
+     */
+    public void encaminharParaAnaliseJuridica(ContratoPendente contrato) {
+        if (contrato.getStatusCicloVida() != StatusContratoCicloVida.EM_ELABORACAO) {
+            throw new InvarianteVioladaException(
+                "Apenas contratos em fase 'EM_ELABORACAO' podem ser remetidos para análise jurídica."
+            );
+        }
+
+        if (contrato.getItens().isEmpty()) {
+            throw new InvarianteVioladaException(
+                "Inviável submeter para análise jurídica sem planilha orçamentária e itens especificados."
+            );
+        }
+
+        contrato.transicionarStatus(
+            StatusContratoCicloVida.ANALISE_JURIDICA, 
+            "Encaminhado à Consultoria Jurídica/AGU para análise de conformidade legal."
+        );
+    }
+
+    /**
+     * Registra o parecer favorável da Procuradoria e avança para a fase de vinculação orçamentária.
+     */
+    public void registrarParecerJuridicoFavoravel(ContratoPendente contrato, ParecerJuridico parecer) {
+        if (contrato.getStatusCicloVida() != StatusContratoCicloVida.ANALISE_JURIDICA) {
+            throw new InvarianteVioladaException("Contrato não está aguardando parecer jurídico.");
+        }
+
+        if (!parecer.isAprovado()) {
+            contrato.transicionarStatus(
+                StatusContratoCicloVida.EM_ELABORACAO, 
+                "Devolvido para saneamento de diligências apontadas pelo parecer jurídico: " + parecer.justificativa()
+            );
+            return;
+        }
+
+        contrato.anexarParecerJuridico(parecer);
+    }
+
+    /**
+     * Vincula a Nota de Empenho (NE) após validação de saldo orçamentário no SIAFI/SIAFEM.
+     * Nenhum contrato administrativo pode ser assinado sem prévio empenho (Art. 60 da Lei 4.320/1964).
+     */
+    public void vincularNotaEmpenho(ContratoPendente contrato, NotaEmpenho notaEmpenho) {
+        if (contrato.getStatusCicloVida() != StatusContratoCicloVida.ANALISE_JURIDICA 
+                || !contrato.possuiParecerJuridicoAprovado()) {
+            throw new InvarianteVioladaException(
+                "Empenho vedado: contrato exige parecer jurídico favorável prévio devidamente homologado."
+            );
+        }
+
+        // Validação com o sistema orçamentário externo (Port/Adapter)
+        boolean saldoValido = siafiPort.validarSaldoEmpenho(
+            notaEmpenho.numero(), 
+            contrato.getValorTotal().valor()
+        );
+
+        if (!saldoValido) {
+            throw new InvarianteVioladaException(
+                "Saldo da dotação orçamentária insuficiente ou inválido no SIAFI para a Nota de Empenho: " + notaEmpenho.numero()
+            );
+        }
+
+        contrato.vincularEmpenho(notaEmpenho);
+        contrato.transicionarStatus(
+            StatusContratoCicloVida.EMPENHADO, 
+            "Nota de empenho " + notaEmpenho.numero() + " vinculada e autenticada com sucesso."
+        );
+    }
+
+    /**
+     * Envia o contrato empenhado para homologação pelo Tribunal de Contas competente (TCU/TCE).
+     */
+    public void submeterAprovacaoTribunalContas(ContratoPendente contrato) {
+        if (contrato.getStatusCicloVida() != StatusContratoCicloVida.EMPENHADO) {
+            throw new InvarianteVioladaException(
+                "Apenas contratos devidamente empenhados podem ser submetidos à chancela do Tribunal de Contas."
+            );
+        }
+
+        var protocolo = tribunalContasPort.registrarRemessaContrato(
+            contrato.getNumeroProcesso().valor(), 
+            contrato.getValorTotal().valor()
+        );
+
+        contrato.registrarProtocoloTribunal(protocolo);
+        contrato.transicionarStatus(
+            StatusContratoCicloVida.APROVADO_TRIBUNAL, 
+            "Chancela de conformidade emitida pelo Tribunal de Contas sob protocolo: " + protocolo
+        );
+    }
+
+    /**
+     * Publica o contrato no Portal Nacional de Contratações Públicas (PNCP) tornando-o plenamente VIGENTE.
+     * (Art. 94 da Lei 14.133/2021: eficácia jurídica do contrato vinculada à publicação no PNCP).
+     */
+    public void ativarVigenciaOficial(ContratoPendente contrato, LocalDate dataPublicacaoPncp) {
+        if (contrato.getStatusCicloVida() != StatusContratoCicloVida.APROVADO_TRIBUNAL) {
+            throw new InvarianteVioladaException(
+                "Contrato não pode se tornar VIGENTE sem prévia aprovação e certificação do Tribunal de Contas."
+            );
+        }
+
+        if (dataPublicacaoPncp.isAfter(LocalDate.now())) {
+            throw new InvarianteVioladaException("Data de publicação no PNCP não pode ser futura.");
+        }
+
+        contrato.transicionarStatus(
+            StatusContratoCicloVida.VIGENTE, 
+            "Contrato publicado no PNCP em " + dataPublicacaoPncp + ". Vigência jurídica iniciada."
+        );
+    }
 }`
+  },
+  {
+    id: 'bpmn-statemachine',
+    name: 'ContratoStateMachineConfig.java (Motor BPMN/Estados)',
+    path: 'src/main/java/gov/audit/infrastructure/bpm/ContratoStateMachineConfig.java',
+    category: 'infrastructure',
+    language: 'java',
+    description: 'Configuração robusta de máquina de estados / motor BPMN no Spring com Guards fiscais, Actions auditáveis e transições do ciclo de vida público.',
+    content: `package gov.audit.infrastructure.bpm;
+
+import gov.audit.domain.model.contrato.StatusContratoCicloVida;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.statemachine.action.Action;
+import org.springframework.statemachine.config.EnableStateMachineFactory;
+import org.springframework.statemachine.config.EnumStateMachineConfigurerAdapter;
+import org.springframework.statemachine.config.builders.StateMachineConfigurationConfigurer;
+import org.springframework.statemachine.config.builders.StateMachineStateConfigurer;
+import org.springframework.statemachine.config.builders.StateMachineTransitionConfigurer;
+import org.springframework.statemachine.guard.Guard;
+
+import java.util.EnumSet;
+
+/**
+ * MOTOR DE PROCESSOS BPMN / SPRING STATE MACHINE
+ * 
+ * Implementa a máquina de estados rigorosa do ciclo de vida de contratos públicos.
+ * Garante que transições ilegais sejam interceptadas por Guards de integridade fiscal,
+ * registrando auditoria em cada transição concluída.
+ */
+@Configuration
+@EnableStateMachineFactory(name = "contratoStateMachineFactory")
+public class ContratoStateMachineConfig 
+        extends EnumStateMachineConfigurerAdapter<StatusContratoCicloVida, ContratoEventoBpm> {
+
+    private static final Logger log = LoggerFactory.getLogger(ContratoStateMachineConfig.class);
+
+    @Override
+    public void configure(StateMachineConfigurationConfigurer<StatusContratoCicloVida, ContratoEventoBpm> config) 
+            throws Exception {
+        config
+            .withConfiguration()
+            .autoStartup(true)
+            .listener(new ContratoStateChangeListener());
+    }
+
+    @Override
+    public void configure(StateMachineStateConfigurer<StatusContratoCicloVida, ContratoEventoBpm> states) 
+            throws Exception {
+        states
+            .withStates()
+            .initial(StatusContratoCicloVida.EM_ELABORACAO)
+            .states(EnumSet.allOf(StatusContratoCicloVida.class))
+            .end(StatusContratoCicloVida.VIGENTE)
+            .end(StatusContratoCicloVida.CANCELADO_REJEITADO);
+    }
+
+    @Override
+    public void configure(StateMachineTransitionConfigurer<StatusContratoCicloVida, ContratoEventoBpm> transitions) 
+            throws Exception {
+        transitions
+            // 1. EM_ELABORACAO -> ANALISE_JURIDICA
+            .withExternal()
+                .source(StatusContratoCicloVida.EM_ELABORACAO)
+                .target(StatusContratoCicloVida.ANALISE_JURIDICA)
+                .event(ContratoEventoBpm.ENVIAR_ANALISE_JURIDICA)
+                .guard(guardPlanilhaOrcamentariaPresente())
+                .action(actionNotificarProcuradoria())
+            .and()
+
+            // 2. ANALISE_JURIDICA -> EMPENHADO (Parecer Favorável)
+            .withExternal()
+                .source(StatusContratoCicloVida.ANALISE_JURIDICA)
+                .target(StatusContratoCicloVida.EMPENHADO)
+                .event(ContratoEventoBpm.HOMOLOGAR_PARECER_E_EMPENHAR)
+                .guard(guardParecerJuridicoFavoravel())
+                .action(actionRegistrarNotaEmpenho())
+            .and()
+
+            // 2.1 ANALISE_JURIDICA -> EM_ELABORACAO (Diligência/Devolução)
+            .withExternal()
+                .source(StatusContratoCicloVida.ANALISE_JURIDICA)
+                .target(StatusContratoCicloVida.EM_ELABORACAO)
+                .event(ContratoEventoBpm.DEVOLVER_PARA_DILIGENCIA)
+                .action(actionNotificarSetorRequisitante())
+            .and()
+
+            // 3. EMPENHADO -> APROVADO_TRIBUNAL
+            .withExternal()
+                .source(StatusContratoCicloVida.EMPENHADO)
+                .target(StatusContratoCicloVida.APROVADO_TRIBUNAL)
+                .event(ContratoEventoBpm.SUBMETER_TRIBUNAL_CONTAS)
+                .guard(guardSaldoEmpenhoAtivo())
+                .action(actionIntegrarTribunalContas())
+            .and()
+
+            // 4. APROVADO_TRIBUNAL -> VIGENTE
+            .withExternal()
+                .source(StatusContratoCicloVida.APROVADO_TRIBUNAL)
+                .target(StatusContratoCicloVida.VIGENTE)
+                .event(ContratoEventoBpm.PUBLICAR_PNCP_E_ATIVAR)
+                .action(actionPublicarPncp());
+    }
+
+    // =========================================================================
+    // GUARDS: Invariantes fiscais e processuais (BPMN Gateways)
+    // =========================================================================
+
+    @Bean
+    public Guard<StatusContratoCicloVida, ContratoEventoBpm> guardPlanilhaOrcamentariaPresente() {
+        return context -> {
+            Boolean temPlanilha = context.getMessageHeaders().get("hasItems", Boolean.class);
+            return temPlanilha != null && temPlanilha;
+        };
+    }
+
+    @Bean
+    public Guard<StatusContratoCicloVida, ContratoEventoBpm> guardParecerJuridicoFavoravel() {
+        return context -> {
+            Boolean aprovado = context.getMessageHeaders().get("parecerAprovado", Boolean.class);
+            return Boolean.TRUE.equals(aprovado);
+        };
+    }
+
+    @Bean
+    public Guard<StatusContratoCicloVida, ContratoEventoBpm> guardSaldoEmpenhoAtivo() {
+        return context -> {
+            String numEmpenho = context.getMessageHeaders().get("notaEmpenho", String.class);
+            return numEmpenho != null && !numEmpenho.isBlank();
+        };
+    }
+
+    // =========================================================================
+    // ACTIONS: Trilha de Auditoria & Integrações
+    // =========================================================================
+
+    @Bean
+    public Action<StatusContratoCicloVida, ContratoEventoBpm> actionNotificarProcuradoria() {
+        return context -> log.info("[AUDIT-BPM] Processo {} encaminhado à Consultoria Jurídica.",
+            context.getMessageHeaders().get("processoId"));
+    }
+
+    @Bean
+    public Action<StatusContratoCicloVida, ContratoEventoBpm> actionRegistrarNotaEmpenho() {
+        return context -> log.info("[AUDIT-BPM] Nota de Empenho vinculada com sucesso no SIAFI.");
+    }
+
+    @Bean
+    public Action<StatusContratoCicloVida, ContratoEventoBpm> actionNotificarSetorRequisitante() {
+        return context -> log.warn("[AUDIT-BPM] Contrato devolvido para diligência por recomendação jurídica.");
+    }
+
+    @Bean
+    public Action<StatusContratoCicloVida, ContratoEventoBpm> actionIntegrarTribunalContas() {
+        return context -> log.info("[AUDIT-BPM] Remessa registrada junto ao Tribunal de Contas (TCU/TCE).");
+    }
+
+    @Bean
+    public Action<StatusContratoCicloVida, ContratoEventoBpm> actionPublicarPncp() {
+        return context -> log.info("[AUDIT-BPM] Contrato publicado no PNCP. Eficácia e vigência plenas ativadas.");
+    }
+}`
+  },
+  {
+    id: 'rest-controller',
+    name: 'ContratoController.java',
+    path: 'src/main/java/gov/audit/presentation/api/ContratoController.java',
+    category: 'presentation',
+    language: 'java',
+    description: 'REST Controller corporativo com Clean Code, Spring Pageable, OpenAPI Swagger 3.0, Location header com URI e tratamento de idempotência.',
+    content: `package gov.audit.presentation.api;
+
+import gov.audit.application.dto.request.SubmeterContratoInputDTO;
+import gov.audit.application.dto.request.TransicaoCicloVidaRequest;
+import gov.audit.application.dto.response.ContratoDetalhadoResponse;
+import gov.audit.application.usecase.CicloVidaContratoUseCase;
+import gov.audit.application.usecase.ConsultarContratoUseCase;
+import gov.audit.application.usecase.SubmeterContratoAuditoriaUseCase;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
+import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
+
+import java.net.URI;
+import java.util.UUID;
+
+/**
+ * CONTROLADOR REST: ContratoController
+ * Ponto de entrada da API de auditoria de contratos administrativos.
+ * Segue Clean Code e boas práticas de RESTful APIs governamentais.
+ */
+@RestController
+@RequestMapping("/api/v1/contratos")
+@Tag(name = "Contratos Públicos", description = "Endpoints de auditoria, fiscalização e ciclo de vida sob a Lei 14.133/2021")
+public class ContratoController {
+
+    private final SubmeterContratoAuditoriaUseCase submeterUseCase;
+    private final CicloVidaContratoUseCase cicloVidaUseCase;
+    private final ConsultarContratoUseCase consultarUseCase;
+
+    public ContratoController(
+            SubmeterContratoAuditoriaUseCase submeterUseCase,
+            CicloVidaContratoUseCase cicloVidaUseCase,
+            ConsultarContratoUseCase consultarUseCase
+    ) {
+        this.submeterUseCase = submeterUseCase;
+        this.cicloVidaUseCase = cicloVidaUseCase;
+        this.consultarUseCase = consultarUseCase;
+    }
+
+    @PostMapping
+    @Operation(
+        summary = "Submeter contrato para triagem e auditoria",
+        description = "Cadastra o contrato administrativo com validações de CNPJ, limites da Lei 14.133 e itens."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "201", description = "Contrato cadastrado com sucesso"),
+        @ApiResponse(responseCode = "400", description = "Dados fiscais ou invariantes de negócio violadas",
+                     content = @Content(schema = @Schema(implementation = ProblemDetail.class))),
+        @ApiResponse(responseCode = "422", description = "Regra de negócio violada",
+                     content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
+    })
+    public ResponseEntity<ContratoDetalhadoResponse> submeter(
+            @Valid @RequestBody SubmeterContratoInputDTO input
+    ) {
+        ContratoDetalhadoResponse response = submeterUseCase.executar(input);
+
+        URI location = ServletUriComponentsBuilder
+                .fromCurrentRequest()
+                .path("/{id}")
+                .buildAndExpand(response.id())
+                .toUri();
+
+        return ResponseEntity.created(location).body(response);
+    }
+
+    @GetMapping("/{id}")
+    @Operation(summary = "Obter detalhes do contrato e trilha de auditoria por ID")
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Contrato localizado"),
+        @ApiResponse(responseCode = "404", description = "Contrato não encontrado",
+                     content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
+    })
+    public ResponseEntity<ContratoDetalhadoResponse> buscarPorId(
+            @PathVariable UUID id
+    ) {
+        ContratoDetalhadoResponse response = consultarUseCase.buscarPorId(id);
+        return ResponseEntity.ok(response);
+    }
+
+    @GetMapping
+    @Operation(summary = "Listar contratos com paginação e filtros de auditoria")
+    public ResponseEntity<Page<ContratoDetalhadoResponse>> listar(
+            @RequestParam(required = false) String orgao,
+            @RequestParam(required = false) String status,
+            @PageableDefault(size = 20, sort = "dataCadastro") Pageable pageable
+    ) {
+        Page<ContratoDetalhadoResponse> pagina = consultarUseCase.listar(orgao, status, pageable);
+        return ResponseEntity.ok(pagina);
+    }
+
+    @PatchMapping("/{id}/ciclo-vida/transicao")
+    @Operation(
+        summary = "Executar transição de ciclo de vida (BPMN)",
+        description = "Transiciona o contrato entre EM_ELABORACAO, ANALISE_JURIDICA, EMPENHADO, APROVADO_TRIBUNAL e VIGENTE."
+    )
+    public ResponseEntity<ContratoDetalhadoResponse> transicionar(
+            @PathVariable UUID id,
+            @Valid @RequestBody TransicaoCicloVidaRequest request
+    ) {
+        ContratoDetalhadoResponse atualizado = cicloVidaUseCase.transicionarEstado(id, request);
+        return ResponseEntity.ok(atualizado);
+    }
+}`
+  },
+  {
+    id: 'controller-advice',
+    name: 'GlobalExceptionHandler.java',
+    path: 'src/main/java/gov/audit/presentation/handler/GlobalExceptionHandler.java',
+    category: 'presentation',
+    language: 'java',
+    description: 'ControllerAdvice corporativo com RFC 7807 ProblemDetail, mapeamento de erros de Bean Validation, violações de domínio e trilha para observabilidade.',
+    content: `package gov.audit.presentation.handler;
+
+import gov.audit.domain.exception.BusinessRuleException;
+import gov.audit.domain.exception.ContratoNaoEncontradoException;
+import gov.audit.domain.exception.InvarianteVioladaException;
+import gov.audit.domain.exception.TransicaoEstadoInvalidaException;
+import jakarta.servlet.http.HttpServletRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
+import org.springframework.validation.FieldError;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.net.URI;
+import java.time.Instant;
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * TRATAMENTO GLOBAL DE EXCEÇÕES CORPORATIVAS
+ * Padrão RFC 7807 (Problem Details for HTTP APIs) nativo do Spring Boot 3.x.
+ */
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    /**
+     * Erros de Validação de DTO (Bean Validation - @Valid)
+     */
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ProblemDetail handleValidationException(
+            MethodArgumentNotValidException ex, 
+            HttpServletRequest request
+    ) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, 
+                "Um ou mais campos contêm dados inválidos ou fora dos padrões governamentais."
+        );
+        problem.setType(URI.create("https://govaudit.gov.br/erros/validacao-dados"));
+        problem.setTitle("Erro de Validação de Dados de Entrada");
+        problem.setProperty("timestamp", Instant.now());
+        problem.setProperty("path", request.getRequestURI());
+
+        Map<String, String> invalidFields = new HashMap<>();
+        for (FieldError error : ex.getBindingResult().getFieldErrors()) {
+            invalidFields.put(error.getField(), error.getDefaultMessage());
+        }
+        problem.setProperty("invalidFields", invalidFields);
+
+        log.warn("[VALIDATION-FAIL] Path: {} | Erros: {}", request.getRequestURI(), invalidFields);
+        return problem;
+    }
+
+    /**
+     * Violação de Invariante de Domínio (DDD)
+     */
+    @ExceptionHandler(InvarianteVioladaException.class)
+    public ProblemDetail handleInvarianteViolada(
+            InvarianteVioladaException ex, 
+            HttpServletRequest request
+    ) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.UNPROCESSABLE_ENTITY, 
+                ex.getMessage()
+        );
+        problem.setType(URI.create("https://govaudit.gov.br/erros/invariante-violada"));
+        problem.setTitle("Violação de Invariante de Domínio Público");
+        problem.setProperty("timestamp", Instant.now());
+        problem.setProperty("path", request.getRequestURI());
+
+        log.warn("[INVARIANTE-VIOLADA] {}", ex.getMessage());
+        return problem;
+    }
+
+    /**
+     * Transição Ilegal de Estado do BPMN
+     */
+    @ExceptionHandler(TransicaoEstadoInvalidaException.class)
+    public ProblemDetail handleTransicaoInvalida(
+            TransicaoEstadoInvalidaException ex, 
+            HttpServletRequest request
+    ) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.CONFLICT, 
+                ex.getMessage()
+        );
+        problem.setType(URI.create("https://govaudit.gov.br/erros/transicao-invalida"));
+        problem.setTitle("Transição de Ciclo de Vida Rejeitada");
+        problem.setProperty("timestamp", Instant.now());
+        problem.setProperty("estadoOrigem", ex.getEstadoOrigem());
+        problem.setProperty("eventoDisparado", ex.getEvento());
+
+        log.warn("[BPM-TRANSITION-REJECTED] {}", ex.getMessage());
+        return problem;
+    }
+
+    /**
+     * Contrato Não Encontrado
+     */
+    @ExceptionHandler(ContratoNaoEncontradoException.class)
+    public ProblemDetail handleNotFound(
+            ContratoNaoEncontradoException ex, 
+            HttpServletRequest request
+    ) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.NOT_FOUND, 
+                ex.getMessage()
+        );
+        problem.setType(URI.create("https://govaudit.gov.br/erros/contrato-nao-encontrado"));
+        problem.setTitle("Recurso Público Não Localizado");
+        problem.setProperty("timestamp", Instant.now());
+
+        return problem;
+    }
+
+    /**
+     * Erro Inesperado de Servidor (Fallback Geral)
+     */
+    @ExceptionHandler(Exception.class)
+    public ProblemDetail handleGenericException(
+            Exception ex, 
+            HttpServletRequest request
+    ) {
+        log.error("[INTERNAL-ERROR] Erro não mapeado em {}", request.getRequestURI(), ex);
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.INTERNAL_SERVER_ERROR, 
+                "Ocorreu um erro interno de processamento no sistema de auditoria."
+        );
+        problem.setType(URI.create("https://govaudit.gov.br/erros/erro-interno"));
+        problem.setTitle("Erro Interno do Servidor");
+        problem.setProperty("timestamp", Instant.now());
+
+        return problem;
+    }
+}`
+  },
+  {
+    id: 'submeter-dto',
+    name: 'SubmeterContratoInputDTO.java',
+    path: 'src/main/java/gov/audit/application/dto/request/SubmeterContratoInputDTO.java',
+    category: 'application',
+    language: 'java',
+    description: 'DTO de entrada com validações robustas do Bean Validation (@Pattern com regex SEI/CNPJ, @NotNull, @DecimalMin, @Valid aninhado em itens orçamentários).',
+    content: `package gov.audit.application.dto.request;
+
+import gov.audit.domain.model.contrato.ModalidadeLicitacao;
+import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.*;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.List;
+
+/**
+ * DTO DE ENTRADA: SubmeterContratoInputDTO
+ * 
+ * Contém validações rigorosas com Bean Validation alinhadas às exigências
+ * do Tribunal de Contas, da Receita Federal e do Sistema Eletrônico de Informações (SEI).
+ */
+public record SubmeterContratoInputDTO(
+
+    @Schema(description = "Número do processo administrativo no padrão SEI/e-Gov", example = "SEI-23000.001928/2026-44")
+    @NotBlank(message = "Número do processo administrativo é obrigatório.")
+    @Pattern(
+        regexp = "^(SEI|MGI|TCU|MEC|MS)-\\\\d{5}\\\\.\\\\d{6}/\\\\d{4}-\\\\d{2}$",
+        message = "Número do processo deve seguir o padrão governamental (ex: SEI-23000.001928/2026-44)."
+    )
+    String numeroProcesso,
+
+    @Schema(description = "Órgão ou Entidade da Administração Pública contratante", example = "Ministério da Gestão e da Inovação em Serviços Públicos")
+    @NotBlank(message = "Órgão contratante é obrigatório.")
+    @Size(min = 5, max = 200, message = "Nome do órgão contratante deve possuir entre 5 e 200 caracteres.")
+    String orgaoContratante,
+
+    @Schema(description = "CNPJ regular da empresa contratada com máscara oficial", example = "00.394.460/0058-87")
+    @NotBlank(message = "CNPJ da empresa contratada é obrigatório.")
+    @Pattern(
+        regexp = "^\\\\d{2}\\\\.\\\\d{3}\\\\.\\\\d{3}/\\\\d{4}-\\\\d{2}$",
+        message = "CNPJ deve estar no formato oficial com máscara: 00.000.000/0000-00."
+    )
+    String cnpjContratada,
+
+    @Schema(description = "Razão Social conforme registro no CNPJ da Receita Federal", example = "TechGov Inovações em Tecnologia Ltda.")
+    @NotBlank(message = "Razão social da contratada é obrigatória.")
+    @Size(min = 3, max = 255, message = "Razão social deve ter entre 3 e 255 caracteres.")
+    String razaoSocialContratada,
+
+    @Schema(description = "Modalidade de contratação conforme Lei 14.133/2021", example = "PREGAO_ELETRONICO")
+    @NotNull(message = "Modalidade de licitação é obrigatória.")
+    ModalidadeLicitacao modalidade,
+
+    @Schema(description = "Valor global estimado do contrato em Reais", example = "48500.00")
+    @NotNull(message = "Valor total do contrato é obrigatório.")
+    @DecimalMin(value = "0.01", message = "Valor do contrato deve ser maior que zero.")
+    @Digits(integer = 15, fraction = 2, message = "Valor deve possuir no máximo 15 dígitos inteiros e 2 casas decimais.")
+    BigDecimal valorTotal,
+
+    @Schema(description = "Data de início da vigência contratual prevista", example = "2026-11-01")
+    @NotNull(message = "Data de início da vigência é obrigatória.")
+    @FutureOrPresent(message = "Data de início da vigência não pode ser anterior à data presente.")
+    LocalDate dataInicioVigencia,
+
+    @Schema(description = "Data de encerramento da vigência contratual prevista", example = "2027-10-31")
+    @NotNull(message = "Data de término da vigência é obrigatória.")
+    LocalDate dataFimVigencia,
+
+    @Schema(description = "Planilha orçamentária discriminada de itens e serviços")
+    @NotEmpty(message = "O contrato exige no mínimo 1 item descrito na planilha orçamentária.")
+    @Valid
+    List<ItemContratoDTO> itens
+
+) {
+
+    /**
+     * DTO interno para itens da planilha orçamentária
+     */
+    public record ItemContratoDTO(
+        @NotNull(message = "Número do item é obrigatório.")
+        @Positive(message = "Número do item deve ser positivo.")
+        Integer numeroItem,
+
+        @NotBlank(message = "Descrição técnica do item é obrigatória.")
+        @Size(min = 5, max = 500, message = "Descrição do item deve ter entre 5 e 500 caracteres.")
+        String descricao,
+
+        @NotNull(message = "Quantidade estimada é obrigatória.")
+        @Positive(message = "Quantidade do item deve ser maior que zero.")
+        Integer quantidade,
+
+        @NotNull(message = "Valor unitário do item é obrigatório.")
+        @DecimalMin(value = "0.01", message = "Valor unitário deve ser maior que zero.")
+        @Digits(integer = 12, fraction = 2, message = "Valor unitário deve possuir até 2 casas decimais.")
+        BigDecimal valorUnitario
+    ) {}
+}
+`
   }
 ];
+
