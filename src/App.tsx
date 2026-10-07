@@ -14,16 +14,20 @@ import {
   BookOpen,
   Cpu,
   Database,
-  GitCommit
+  GitCommit,
+  Sparkles,
+  TrendingUp
 } from 'lucide-react';
 import { CODE_FILES, DIRECTORY_TREE_ASCII } from './data/govAuditCode';
 import { CodeViewer } from './components/CodeViewer';
 import { ArchitectureDiagram } from './components/ArchitectureDiagram';
 import { ContractSimulator } from './components/ContractSimulator';
 import { BpmnWorkflowViewer } from './components/BpmnWorkflowViewer';
+import { AiAuditLab } from './components/AiAuditLab';
+import { StatisticalTimeSeriesLab } from './components/StatisticalTimeSeriesLab';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<string>('bpmn');
+  const [activeTab, setActiveTab] = useState<string>('stats');
   const [selectedFileId, setSelectedFileId] = useState<string>('contrato-pendente');
   const [copiedTree, setCopiedTree] = useState(false);
 
@@ -79,6 +83,30 @@ export default function App() {
 
         {/* Navigation Tabs */}
         <div className="max-w-7xl mx-auto px-4 sm:px-6 flex items-center gap-1 overflow-x-auto text-xs font-medium border-t border-slate-800/60 pt-1 pb-1 scrollbar-none">
+          <button
+            onClick={() => setActiveTab('stats')}
+            className={`px-3 py-2 rounded-lg transition-colors flex items-center gap-2 whitespace-nowrap ${
+              activeTab === 'stats'
+                ? 'bg-blue-950 text-blue-300 font-semibold border border-blue-800'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+            }`}
+          >
+            <TrendingUp className="w-4 h-4 text-blue-400" />
+            <span>Séries Temporais &amp; Estatística</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('ai')}
+            className={`px-3 py-2 rounded-lg transition-colors flex items-center gap-2 whitespace-nowrap ${
+              activeTab === 'ai'
+                ? 'bg-purple-950 text-purple-300 font-semibold border border-purple-800'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+            }`}
+          >
+            <Sparkles className="w-4 h-4 text-purple-400" />
+            <span>Módulo de IA &amp; GraphRAG</span>
+          </button>
+
           <button
             onClick={() => setActiveTab('overview')}
             className={`px-3 py-2 rounded-lg transition-colors flex items-center gap-2 whitespace-nowrap ${
@@ -206,6 +234,16 @@ export default function App() {
               </div>
             </div>
           </div>
+        )}
+
+        {/* TAB STATS: SÉRIES TEMPORAIS & ESTATÍSTICA */}
+        {activeTab === 'stats' && (
+          <StatisticalTimeSeriesLab />
+        )}
+
+        {/* TAB AI: MÓDULO DE IA & GRAPHRAG */}
+        {activeTab === 'ai' && (
+          <AiAuditLab />
         )}
 
         {/* TAB BPMN: MOTOR DE PROCESSOS */}

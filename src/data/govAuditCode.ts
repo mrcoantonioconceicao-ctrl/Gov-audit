@@ -1637,6 +1637,990 @@ public record SubmeterContratoInputDTO(
     ) {}
 }
 `
+  },
+  {
+    id: 'auditoria-ia-service',
+    name: 'AuditoriaInteligenteService.java',
+    path: 'src/main/java/gov/audit/application/ai/AuditoriaInteligenteService.java',
+    category: 'application',
+    language: 'java',
+    description: 'Serviço orquestrador de IA corporativa: unifica parsing sintático AST da minuta, enriquecimento contextual GraphRAG e protocolo MCP.',
+    content: `package gov.audit.application.ai;
+
+import gov.audit.application.ai.ast.MinutaContratualAstParser;
+import gov.audit.application.ai.ast.ResultadoAnaliseAst;
+import gov.audit.application.ai.graphrag.GraphRagKnowledgeService;
+import gov.audit.application.ai.graphrag.SubgrafoContextoAuditoria;
+import gov.audit.application.ai.mcp.McpClientPort;
+import gov.audit.application.ai.mcp.McpContextPayload;
+import gov.audit.application.dto.response.ParecerAuditoriaIaResponse;
+import gov.audit.domain.exception.ContratoNaoEncontradoException;
+import gov.audit.domain.model.contrato.ContratoPendente;
+import gov.audit.domain.repository.ContratoPendenteRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Instant;
+import java.util.*;
+
+/**
+ * SERVIÇO DE AUDITORIA INTELIGENTE (ORQUESTRADOR DE IA)
+ * 
+ * Integra:
+ *  1. Análise Sintática Estática (AST): detecta vícios formais e omissões do Art. 92 da Lei 14.133.
+ *  2. GraphRAG: enriquece o contexto com grafos de conhecimento (sanções CEIS/CNEP, acórdãos TCU e histórico).
+ *  3. Model Context Protocol (MCP): padroniza a troca de ferramentas, contexto e dados com o agente de IA.
+ *  4. Modelo Especializado (Fine-Tuned): infere riscos e gera minuta de parecer técnico fundamentado.
+ */
+@Service
+public class AuditoriaInteligenteService {
+
+    private static final Logger log = LoggerFactory.getLogger(AuditoriaInteligenteService.class);
+
+    private final ContratoPendenteRepository contratoRepository;
+    private final MinutaContratualAstParser astParser;
+    private final GraphRagKnowledgeService graphRagService;
+    private final McpClientPort mcpClient;
+
+    public AuditoriaInteligenteService(
+            ContratoPendenteRepository contratoRepository,
+            MinutaContratualAstParser astParser,
+            GraphRagKnowledgeService graphRagService,
+            McpClientPort mcpClient
+    ) {
+        this.contratoRepository = contratoRepository;
+        this.astParser = astParser;
+        this.graphRagService = graphRagService;
+        this.mcpClient = mcpClient;
+    }
+
+    @Transactional(readOnly = true)
+    public ParecerAuditoriaIaResponse auditarContrato(UUID contratoId, String textoMinutaCompleto) {
+        log.info("[AI-AUDIT] Iniciando auditoria automatizada para contrato: {}", contratoId);
+
+        // 1. Carrega o aggregate root do domínio
+        ContratoPendente contrato = contratoRepository.buscarPorId(contratoId)
+                .orElseThrow(() -> new ContratoNaoEncontradoException("Contrato não encontrado: " + contratoId));
+
+        // 2. Análise Estática Documental via AST (Abstract Syntax Tree)
+        ResultadoAnaliseAst resultadoAst = astParser.analisarTextoMinuta(textoMinutaCompleto);
+        log.info("[AI-AUDIT] AST concluída. Cláusulas inspecionadas: {}. Desvios estruturais: {}",
+                resultadoAst.totalClausulas(), resultadoAst.desviosDetectados().size());
+
+        // 3. Recuperação Aumentada por Grafo de Conhecimento (GraphRAG)
+        SubgrafoContextoAuditoria contextoGrafo = graphRagService.recuperarContexto(
+                contrato.getCnpjContratada().valor(),
+                contrato.getModalidade().name(),
+                contrato.getValorTotal().valor()
+        );
+        log.info("[AI-AUDIT] GraphRAG recuperou {} precedentes do TCU e {} vínculos relacionais.",
+                contextoGrafo.acordaosTcuRelevantes().size(), contextoGrafo.nosRelacionados().size());
+
+        // 4. Montagem do Payload MCP (Model Context Protocol)
+        McpContextPayload mcpPayload = McpContextPayload.builder()
+                .sessionId(UUID.randomUUID().toString())
+                .contratoId(contrato.getId().toString())
+                .numeroProcesso(contrato.getNumeroProcesso().valor())
+                .cnpjContratada(contrato.getCnpjContratada().valor())
+                .valorGlobal(contrato.getValorTotal().valor())
+                .modalidadeLicitacao(contrato.getModalidade().name())
+                .astRiskFindings(resultadoAst.desviosDetectados())
+                .graphKnowledge(contextoGrafo)
+                .addResource("uri://gov/leis/14133-2021", "Artigos 75, 92 e 145")
+                .addTool("consultar_tcu_jurisprudencia", "Consulta base vetorial/grafo de jurisprudência")
+                .addTool("verificar_cadin_receita", "Checagem de adimplência fiscal")
+                .build();
+
+        // 5. Execução do Agente de IA via MCP
+        String parecerTextoIa = mcpClient.executarAuditoria(mcpPayload);
+
+        // 6. Cálculo do Score de Conformidade Governamental (0 a 100)
+        double scoreConformidade = calcularScoreConformidade(resultadoAst, contextoGrafo);
+
+        return new ParecerAuditoriaIaResponse(
+                UUID.randomUUID(),
+                contrato.getId(),
+                contrato.getNumeroProcesso().valor(),
+                scoreConformidade,
+                scoreConformidade >= 75.0 ? "FAVORAVEL_COM_RESSALVAS" : "DESFAVORAVEL_IRREGULAR",
+                parecerTextoIa,
+                resultadoAst.desviosDetectados(),
+                contextoGrafo.acordaosTcuRelevantes(),
+                contextoGrafo.alertasSancao(),
+                Instant.now()
+        );
+    }
+
+    private double calcularScoreConformidade(ResultadoAnaliseAst ast, SubgrafoContextoAuditoria grafo) {
+        double score = 100.0;
+
+        // Penalização por desvios na árvore sintática documental (AST)
+        score -= (ast.desviosDetectados().size() * 12.5);
+
+        // Penalização por histórico de sanções em CEIS/CNEP
+        if (!grafo.alertasSancao().isEmpty()) {
+            score -= 35.0;
+        }
+
+        // Penalização por precedentes desfavoráveis do TCU
+        score -= (grafo.acordaosTcuRelevantes().size() * 5.0);
+
+        return Math.max(0.0, Math.min(100.0, score));
+    }
+}`
+  },
+  {
+    id: 'ast-parser',
+    name: 'MinutaContratualAstParser.java (AST Engine)',
+    path: 'src/main/java/gov/audit/application/ai/ast/MinutaContratualAstParser.java',
+    category: 'application',
+    language: 'java',
+    description: 'Parser de Árvore Sintática Abstrata (AST) para documentos contratuais públicos: validação de cláusulas obrigatórias (Art. 92 Lei 14.133).',
+    content: `package gov.audit.application.ai.ast;
+
+import org.springframework.stereotype.Component;
+
+import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * PARSER DE ÁRVORE SINTÁTICA ABSTRATA (AST) PARA MINUTAS CONTRATUAIS
+ * 
+ * Converte o texto plano do contrato público em uma estrutura em árvore hierárquica:
+ *  Documento -> Seção -> Cláusula -> Parágrafo / Inciso -> Conteúdo
+ * 
+ * Executa análise estática formal contra os requisitos do Art. 92 da Lei 14.133/2021:
+ *  - Cláusula de Objeto e Vinculação ao Edital
+ *  - Cláusula de Reajuste e Índice de Preços (Obrigatória se vigência >= 1 ano)
+ *  - Cláusula de Garantia e Penalidades
+ *  - Detecção de adiantamento sem caução (Vedação do Art. 145)
+ */
+@Component
+public class MinutaContratualAstParser {
+
+    private static final Pattern PADRAO_CLAUSULA = Pattern.compile(
+        "(?i)^\\\\s*(CLÁUSULA\\\\s+[A-Z0-9ªº\\\\-]+|CLÁUSULA\\\\s+[A-Z]+)\\\\s*[-–:]?\\\\s*(.*?)$",
+        Pattern.MULTILINE
+    );
+
+    private static final Pattern PADRAO_PARAGRAFO = Pattern.compile(
+        "(?i)^\\\\s*(§\\\\s*\\\\d+º?|PARÁGRAFO\\\\s+[A-Z0-9ºª]+)\\\\s*[-–:]?\\\\s*(.*?)$",
+        Pattern.MULTILINE
+    );
+
+    public ResultadoAnaliseAst analisarTextoMinuta(String textoMinuta) {
+        if (textoMinuta == null || textoMinuta.isBlank()) {
+            return new ResultadoAnaliseAst(0, List.of(
+                new DesvioAst("ESTRUTURAL_VAZIO", "Documento da minuta vazio ou ilegível", "ALTO", 0)
+            ), null);
+        }
+
+        // 1. Constrói a AST
+        DocumentoAstNode raiz = construirAst(textoMinuta);
+
+        // 2. Valida regras estáticas contra a Lei 14.133/2021
+        List<DesvioAst> desvios = new ArrayList<>();
+        validarClausulaObjeto(raiz, desvios);
+        validarIndiceReajuste(raiz, desvios);
+        validarVedacaoAdiantamento(raiz, desvios);
+        validarRegimeExecucao(raiz, desvios);
+        validarMatrizRiscos(raiz, desvios);
+
+        return new ResultadoAnaliseAst(raiz.getClausulas().size(), desvios, raiz);
+    }
+
+    private DocumentoAstNode construirAst(String texto) {
+        DocumentoAstNode doc = new DocumentoAstNode("MinutaContratual");
+        String[] linhas = texto.split("\\\\r?\\\\n");
+
+        ClausulaAstNode clausulaAtual = null;
+
+        for (int i = 0; i < linhas.length; i++) {
+            String linha = linhas[i].trim();
+            if (linha.isEmpty()) continue;
+
+            Matcher mClausula = PADRAO_CLAUSULA.matcher(linha);
+            if (mClausula.find()) {
+                clausulaAtual = new ClausulaAstNode(mClausula.group(1), mClausula.group(2), i + 1);
+                doc.adicionarClausula(clausulaAtual);
+                continue;
+            }
+
+            Matcher mParagrafo = PADRAO_PARAGRAFO.matcher(linha);
+            if (mParagrafo.find() && clausulaAtual != null) {
+                clausulaAtual.adicionarFilho(new ParagrafoAstNode(mParagrafo.group(1), mParagrafo.group(2), i + 1));
+                continue;
+            }
+
+            if (clausulaAtual != null) {
+                clausulaAtual.concatenarTexto(linha);
+            }
+        }
+
+        return doc;
+    }
+
+    // Regra 1: Objeto e vinculação (Art. 92, I da Lei 14.133)
+    private void validarClausulaObjeto(DocumentoAstNode doc, List<DesvioAst> desvios) {
+        boolean temObjeto = doc.getClausulas().stream()
+                .anyMatch(c -> c.getTitulo().toUpperCase().contains("OBJETO") || c.getTextoCompleto().toUpperCase().contains("OBJETO DESTE CONTRATO"));
+        if (!temObjeto) {
+            desvios.add(new DesvioAst(
+                "OMISSAO_CLAUSULA_OBJETO",
+                "Ausência de cláusula expressa definindo o objeto contratual (Art. 92, I da Lei 14.133/2021).",
+                "CRITICO",
+                1
+            ));
+        }
+    }
+
+    // Regra 2: Critério de reajuste e índice econômico (Art. 92, V da Lei 14.133)
+    private void validarIndiceReajuste(DocumentoAstNode doc, List<DesvioAst> desvios) {
+        boolean temReajuste = doc.getClausulas().stream()
+                .anyMatch(c -> c.getTextoCompleto().toUpperCase().contains("REAJUSTE") || c.getTitulo().toUpperCase().contains("REAJUSTAMENTO"));
+
+        if (!temReajuste) {
+            desvios.add(new DesvioAst(
+                "OMISSAO_CLAUSULA_REAJUSTE",
+                "Ausência de cláusula estipulando índice oficial de reajuste de preços (Art. 92, V da Lei 14.133/2021).",
+                "ALTO",
+                0
+            ));
+        }
+    }
+
+    // Regra 3: Vedação a pagamentos antecipados sem garantia excepcional (Art. 145 da Lei 14.133)
+    private void validarVedacaoAdiantamento(DocumentoAstNode doc, List<DesvioAst> desvios) {
+        for (ClausulaAstNode c : doc.getClausulas()) {
+            String textoUpper = c.getTextoCompleto().toUpperCase();
+            if ((textoUpper.contains("ADIANTAMENTO") || textoUpper.contains("PAGAMENTO ANTECIPADO")) 
+                    && !textoUpper.contains("GARANTIA") && !textoUpper.contains("CAUÇÃO")) {
+                desvios.add(new DesvioAst(
+                    "PAGAMENTO_ANTECIPADO_IRREGULAR",
+                    "Cláusula prevê pagamento antecipado sem exigência expressa de garantia prévia (Vício insanável: Art. 145).",
+                    "CRITICO",
+                    c.getLinhaInicio()
+                ));
+            }
+        }
+    }
+
+    // Regra 4: Matriz de alocação de riscos (Art. 92, IX da Lei 14.133)
+    private void validarMatrizRiscos(DocumentoAstNode doc, List<DesvioAst> desvios) {
+        boolean temMatriz = doc.getClausulas().stream()
+                .anyMatch(c -> c.getTextoCompleto().toUpperCase().contains("MATRIZ DE RISCO") || c.getTitulo().toUpperCase().contains("RISCOS"));
+        if (!temMatriz) {
+            desvios.add(new DesvioAst(
+                "AVISO_MATRIZ_RISCOS",
+                "Recomendação de inclusão expressa de cláusula de alocação de riscos para prevenção de desequilíbrio econômico.",
+                "MEDIO",
+                0
+            ));
+        }
+    }
+
+    private void validarRegimeExecucao(DocumentoAstNode doc, List<DesvioAst> desvios) {
+        boolean temRegime = doc.getClausulas().stream()
+                .anyMatch(c -> c.getTextoCompleto().toUpperCase().contains("REGIME DE EXECUÇÃO") || c.getTextoCompleto().toUpperCase().contains("EMPREITADA"));
+        if (!temRegime) {
+            desvios.add(new DesvioAst(
+                "OMISSAO_REGIME_EXECUCAO",
+                "Falta de definição clara do regime de execução do objeto (Art. 92, IV da Lei 14.133/2021).",
+                "ALTO",
+                0
+            ));
+        }
+    }
+}
+
+// =============================================================================
+// MODELOS DA ÁRVORE SINTÁTICA ABSTRATA (AST)
+// =============================================================================
+
+class DocumentoAstNode {
+    private final String nome;
+    private final List<ClausulaAstNode> clausulas = new ArrayList<>();
+
+    public DocumentoAstNode(String nome) { this.nome = nome; }
+    public void adicionarClausula(ClausulaAstNode c) { this.clausulas.add(c); }
+    public List<ClausulaAstNode> getClausulas() { return clausulas; }
+}
+
+class ClausulaAstNode {
+    private final String identificador;
+    private final String titulo;
+    private final int linhaInicio;
+    private final StringBuilder texto = new StringBuilder();
+    private final List<Object> filhos = new ArrayList<>();
+
+    public ClausulaAstNode(String identificador, String titulo, int linhaInicio) {
+        this.identificador = identificador;
+        this.titulo = titulo;
+        this.linhaInicio = linhaInicio;
+        this.texto.append(titulo).append(" ");
+    }
+
+    public void concatenarTexto(String t) { this.texto.append(t).append(" "); }
+    public void adicionarFilho(Object f) { this.filhos.add(f); }
+    public String getTitulo() { return titulo; }
+    public String getTextoCompleto() { return texto.toString(); }
+    public int getLinhaInicio() { return linhaInicio; }
+}
+
+record ParagrafoAstNode(String identificador, String texto, int linha) {}
+record DesvioAst(String codigo, String descricao, String severidade, int linhaReferencia) {}
+record ResultadoAnaliseAst(int totalClausulas, List<DesvioAst> desviosDetectados, DocumentoAstNode raiz) {}
+`
+  },
+  {
+    id: 'graphrag-service',
+    name: 'GraphRagKnowledgeService.java (GraphRAG Engine)',
+    path: 'src/main/java/gov/audit/application/ai/graphrag/GraphRagKnowledgeService.java',
+    category: 'application',
+    language: 'java',
+    description: 'Componente GraphRAG: navegação em grafos de conhecimento ligando fornecedores, histórico de sócios, sanções CEIS/CNEP e acórdãos do TCU.',
+    content: `package gov.audit.application.ai.graphrag;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+
+import java.math.BigDecimal;
+import java.util.*;
+
+/**
+ * GRAPHRAG KNOWLEDGE SERVICE
+ * 
+ * Executa travessias em grafo (Neo4j / Memgraph / In-Memory Graph Index)
+ * correlacionando entidades de auditoria:
+ * 
+ *   (Empresa) ---[:TEM_SOCIO]---> (Socio) ---[:SOCIO_DE]---> (OutraEmpresa)
+ *       |                                                          |
+ *   [:SANCIONADA_EM]                                          [:SANCIONADA_EM]
+ *       v                                                          v
+ *    (CEIS/CNEP)                                               (CEIS/CNEP)
+ *       ^
+ *       |
+ *   (Contrato) ---[:REGULADO_POR]---> (Lei 14.133) <---[:INTERPRETA]--- (Acórdão TCU)
+ */
+@Service
+public class GraphRagKnowledgeService {
+
+    private static final Logger log = LoggerFactory.getLogger(GraphRagKnowledgeService.class);
+
+    public SubgrafoContextoAuditoria recuperarContexto(
+            String cnpj,
+            String modalidade,
+            BigDecimal valorGlobal
+    ) {
+        log.info("[GRAPHRAG] Executando travessia de grafo para CNPJ: {} | Modalidade: {}", cnpj, modalidade);
+
+        List<String> alertasSancao = new ArrayList<>();
+        List<String> acordaosTcu = new ArrayList<>();
+        List<String> nosRelacionados = new ArrayList<>();
+
+        // 1. Travessia de Grafos de Risco (CEIS, CNEP, CEPIM)
+        nosRelacionados.add("Node[Empresa: " + cnpj + "]");
+        nosRelacionados.add("Relation[CADASTRO_RECEITA -> SITUACAO_ATIVA]");
+
+        // Simulação de detecção de sanções cruzadas por sócios interligados
+        if (cnpj.contains("0000") || cnpj.endsWith("99")) {
+            alertasSancao.add("Alerta CEIS: Empresa coligada ao mesmo quadro societário sofreu suspensão temporária de licitar.");
+            nosRelacionados.add("Node[Sanção: CEIS-SUSPENSAO-2025]");
+        }
+
+        // 2. Busca de Jurisprudência Relevante no Grafo do TCU (Súmulas e Acórdãos)
+        if ("DISPENSA_COMPRAS_SERVICOS".equalsIgnoreCase(modalidade) || "DISPENSA_OBRAS_ENGENHARIA".equalsIgnoreCase(modalidade)) {
+            acordaosTcu.add("Acórdão TCU 2.456/2023-Plenário: É vedado o fracionamento de despesas para burlar o teto da dispensa de licitação (Art. 75, § 1º da Lei 14.133).");
+            acordaosTcu.add("Súmula TCU nº 222: As contratações diretas por dispensa exigem comprovação de vantajosa estimativa de preços prévia.");
+            nosRelacionados.add("Node[Jurisprudencia: Acordao-TCU-2456/2023]");
+        } else {
+            acordaosTcu.add("Acórdão TCU 1.890/2022-Plenário: O critério de julgamento em compras públicas deve assegurar o princípio da isonomia e ampla competitividade.");
+            nosRelacionados.add("Node[Jurisprudencia: Acordao-TCU-1890/2022]");
+        }
+
+        // 3. Regra de Sobrepreço baseada em histórico de atas de registro de preços
+        if (valorGlobal.compareTo(BigDecimal.valueOf(100000.00)) > 0) {
+            acordaosTcu.add("Acórdão TCU 789/2024-Plenário: Exigência de pesquisa de preços com base na cesta de preços aceitáveis do Painel de Preços do Governo Federal.");
+        }
+
+        return new SubgrafoContextoAuditoria(
+                cnpj,
+                alertasSancao,
+                acordaosTcu,
+                nosRelacionados
+        );
+    }
+}
+
+record SubgrafoContextoAuditoria(
+    String cnpjAlvo,
+    List<String> alertasSancao,
+    List<String> acordaosTcuRelevantes,
+    List<String> nosRelacionados
+) {}
+`
+  },
+  {
+    id: 'fine-tuning-pipeline',
+    name: 'FineTuningDatasetPipelineService.java (Fine-Tuning)',
+    path: 'src/main/java/gov/audit/application/ai/finetuning/FineTuningDatasetPipelineService.java',
+    category: 'application',
+    language: 'java',
+    description: 'Pipeline de Fine-Tuning: extração e formatação de datasets no formato JSONL (Chat/Instruction) para especialização de LLMs em conformidade pública.',
+    content: `package gov.audit.application.ai.finetuning;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+
+import java.io.BufferedWriter;
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStreamWriter;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+
+/**
+ * SERVIÇO DE PREPARAÇÃO DE DATASET PARA FINE-TUNING DE LLM
+ * 
+ * Gera datasets no formato padronizado JSONL (JSON Lines) para treinamento supervisionado
+ * (SFT - Supervised Fine-Tuning) ou DPO (Direct Preference Optimization).
+ * 
+ * Formato gerado:
+ * {"messages": [
+ *   {"role": "system", "content": "Você é um auditor sênior de contratos públicos..."},
+ *   {"role": "user", "content": "Analise a cláusula contratual quanto ao Art. 145..."},
+ *   {"role": "assistant", "content": "PARECER TÉCNICO: A cláusula é irregular porque..."}
+ * ]}
+ */
+@Service
+public class FineTuningDatasetPipelineService {
+
+    private static final Logger log = LoggerFactory.getLogger(FineTuningDatasetPipelineService.class);
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    private static final String SYSTEM_PROMPT_ESPECIALIZADO = 
+        "Você é o auditor sênior do sistema GovAudit, especializado na Lei 14.133/2021, jurisprudência do TCU e finanças públicas. Analise rigorosamente os contratos públicos com base nas normas brasileiras.";
+
+    /**
+     * Exporta pares de instrução/resposta calibrados para treinamento do modelo.
+     */
+    public byte[] exportarDatasetJsonlParaTreinamento() throws Exception {
+        log.info("[FINE-TUNING] Gerando dataset supervisionado de auditoria governamental...");
+
+        List<AmostraFineTuning> amostras = coletarAmostrasCuradas();
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(baos, StandardCharsets.UTF_8))) {
+            for (AmostraFineTuning amostra : amostras) {
+                Map<String, Object> registro = new LinkedHashMap<>();
+                List<Map<String, String>> messages = new ArrayList<>();
+
+                messages.add(Map.of("role", "system", "content", SYSTEM_PROMPT_ESPECIALIZADO));
+                messages.add(Map.of("role", "user", "content", amostra.instrucao()));
+                messages.add(Map.of("role", "assistant", "content", amostra.respostaEsperada()));
+
+                registro.put("messages", messages);
+                writer.write(objectMapper.writeValueAsString(registro));
+                writer.newLine();
+            }
+        }
+
+        log.info("[FINE-TUNING] Dataset gerado com sucesso contendo {} amostras.", amostras.size());
+        return baos.toByteArray();
+    }
+
+    private List<AmostraFineTuning> coletarAmostrasCuradas() {
+        return List.of(
+            new AmostraFineTuning(
+                "Analise a cláusula: 'O pagamento será antecipado em 30 dias antes da entrega das licenças de software, sem necessidade de caução.'",
+                "PARECER TÉCNICO: CLÁUSULA NULA POR VÍCIO LEGAL. O Artigo 145 da Lei nº 14.133/2021 veda expressamente o pagamento antecipado, admitindo-o apenas como condição indispensável e com prévia exigência de garantia/caução idônea."
+            ),
+            new AmostraFineTuning(
+                "O termo de referência estipula prazo de vigência de 24 meses contínuos sem prever índice de reajuste.",
+                "PARECER TÉCNICO: IRREGULARIDADE FORMAL. Conforme Artigo 92, inciso V da Lei nº 14.133/2021 e Acórdão TCU 1.823/2022-Plenário, contratos com vigência igual ou superior a 12 meses exigem obrigatoriamente cláusula com índice oficial de preços definido (ex: IPCA/IBGE)."
+            ),
+            new AmostraFineTuning(
+                "Contratação direta por dispensa de licitação de obras de reforma predial no valor de R$ 135.000,00.",
+                "PARECER TÉCNICO: VIOLAÇÃO DE TETO LEGAL. O valor de R$ 135.000,00 excede o teto regulamentar para dispensa de obras e serviços de engenharia (Art. 75, I da Lei 14.133/2021 com atualizações). Exige licitação via Concorrência ou Pregão."
+            )
+        );
+    }
+}
+
+record AmostraFineTuning(String instrucao, String respostaEsperada) {}
+`
+  },
+  {
+    id: 'auditoria-ia-controller',
+    name: 'AuditoriaIaController.java (REST API)',
+    path: 'src/main/java/gov/audit/presentation/api/AuditoriaIaController.java',
+    category: 'presentation',
+    language: 'java',
+    description: 'REST Controller de Inteligência Artificial: expõe endpoints para auditoria com AST/GraphRAG/MCP e exportação de datasets de fine-tuning.',
+    content: `package gov.audit.presentation.api;
+
+import gov.audit.application.ai.AuditoriaInteligenteService;
+import gov.audit.application.ai.finetuning.FineTuningDatasetPipelineService;
+import gov.audit.application.dto.request.AnaliseMinutaIaRequest;
+import gov.audit.application.dto.response.ParecerAuditoriaIaResponse;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.UUID;
+
+/**
+ * CONTROLADOR REST: Módulo de IA e Auditoria Automatizada
+ */
+@RestController
+@RequestMapping("/api/v1/auditoria-ia")
+@Tag(name = "Auditoria com IA & GraphRAG", description = "Endpoints de inteligência artificial governamental com AST, GraphRAG e MCP")
+public class AuditoriaIaController {
+
+    private final AuditoriaInteligenteService auditoriaIaService;
+    private final FineTuningDatasetPipelineService datasetPipelineService;
+
+    public AuditoriaIaController(
+            AuditoriaInteligenteService auditoriaIaService,
+            FineTuningDatasetPipelineService datasetPipelineService
+    ) {
+        this.auditoriaIaService = auditoriaIaService;
+        this.datasetPipelineService = datasetPipelineService;
+    }
+
+    @PostMapping("/contratos/{contratoId}/analisar")
+    @Operation(
+        summary = "Disparar auditoria inteligente automatizada",
+        description = "Executa parsing AST da minuta, enriquece contexto via GraphRAG (CEIS/TCU) e despacha ao modelo de IA especializado via protocolo MCP."
+    )
+    public ResponseEntity<ParecerAuditoriaIaResponse> auditarContrato(
+            @PathVariable UUID contratoId,
+            @Valid @RequestBody AnaliseMinutaIaRequest request
+    ) {
+        ParecerAuditoriaIaResponse parecer = auditoriaIaService.auditarContrato(
+                contratoId,
+                request.textoMinuta()
+        );
+        return ResponseEntity.ok(parecer);
+    }
+
+    @GetMapping(value = "/datasets/fine-tuning/exportar", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    @Operation(
+        summary = "Exportar dataset curado em JSONL para Fine-Tuning de LLM",
+        description = "Gera arquivo JSON Lines contendo pares supervisionados de acórdãos do TCU e normativas públicas para ajuste fino de modelos."
+    )
+    public ResponseEntity<byte[]> exportarDatasetFineTuning() throws Exception {
+        byte[] jsonlBytes = datasetPipelineService.exportarDatasetJsonlParaTreinamento();
+
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"govaudit_fine_tuning_dataset.jsonl\"")
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .body(jsonlBytes);
+    }
+}
+`
+  },
+  {
+    id: 'timeseries-service',
+    name: 'PrevisaoContratoTimeSeriesService.java',
+    path: 'src/main/java/gov/audit/application/statistics/PrevisaoContratoTimeSeriesService.java',
+    category: 'application',
+    language: 'java',
+    description: 'Serviço de análise de séries temporais: projeção de desembolso financeiro, regressão linear, detecção de anomalias (Z-Score) e risco de estouro do teto legal de 25% de aditivos (Art. 125 Lei 14.133).',
+    content: `package gov.audit.application.statistics;
+
+import gov.audit.application.statistics.dto.AlertaDesvioPreditivo;
+import gov.audit.application.statistics.dto.PontoSerieTemporal;
+import gov.audit.application.statistics.dto.ProjecaoDesembolsoResponse;
+import gov.audit.domain.exception.ContratoNaoEncontradoException;
+import gov.audit.domain.model.contrato.ContratoPendente;
+import gov.audit.domain.repository.ContratoPendenteRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.LocalDate;
+import java.util.*;
+
+/**
+ * SERVIÇO DE ANÁLISE ESTATÍSTICA E SÉRIES TEMPORAIS
+ * 
+ * Processa o histórico cronológico de empenhos e liquidações de contratos públicos,
+ * projetando a curva de desembolso e avaliando a probabilidade de estouro do limite
+ * legal de 25% para aditivos contratuais (Art. 125 da Lei 14.133/2021).
+ */
+@Service
+public class PrevisaoContratoTimeSeriesService {
+
+    private static final Logger log = LoggerFactory.getLogger(PrevisaoContratoTimeSeriesService.class);
+
+    // Teto legal de aditivos permitidos sem necessidade de nova licitação (25% sob Art. 125)
+    private static final BigDecimal FATOR_LIMITE_ADITIVO_LEGAL = BigDecimal.valueOf(1.25);
+    private static final double Z_SCORE_LIMIAR_ANOMALIA = 2.0; // 2 desvios-padrão
+
+    private final ContratoPendenteRepository contratoRepository;
+
+    public PrevisaoContratoTimeSeriesService(ContratoPendenteRepository contratoRepository) {
+        this.contratoRepository = contratoRepository;
+    }
+
+    public ProjecaoDesembolsoResponse calcularProjecaoContrato(
+            UUID contratoId, 
+            List<PontoSerieTemporal> historicoDesembolsos, 
+            int mesesProjecao
+    ) {
+        log.info("[STATISTICS-TIMESERIES] Analisando série temporal para contrato: {}", contratoId);
+
+        ContratoPendente contrato = contratoRepository.buscarPorId(contratoId)
+                .orElseThrow(() -> new ContratoNaoEncontradoException("Contrato não localizado: " + contratoId));
+
+        BigDecimal valorContratado = contrato.getValorTotal().valor();
+        BigDecimal limiteLegalAditivo = valorContratado.multiply(FATOR_LIMITE_ADITIVO_LEGAL)
+                .setScale(2, RoundingMode.HALF_EVEN);
+
+        if (historicoDesembolsos == null || historicoDesembolsos.size() < 2) {
+            return gerarProjecaoBaseLinear(contrato, valorContratado, limiteLegalAditivo, mesesProjecao);
+        }
+
+        // 1. Cálculo de Estatísticas Descritivas (Média e Desvio-Padrão para Detecção de Anomalias)
+        double mediaValores = historicoDesembolsos.stream()
+                .mapToDouble(p -> p.valor().doubleValue())
+                .average()
+                .orElse(0.0);
+
+        double variancia = historicoDesembolsos.stream()
+                .mapToDouble(p -> Math.pow(p.valor().doubleValue() - mediaValores, 2))
+                .average()
+                .orElse(0.0);
+        double desvioPadrao = Math.sqrt(variancia);
+
+        // 2. Identificação de Pontos Anômalos (Z-Score)
+        List<AlertaDesvioPreditivo> alertas = new ArrayList<>();
+        for (PontoSerieTemporal ponto : historicoDesembolsos) {
+            double zScore = desvioPadrao > 0 ? (ponto.valor().doubleValue() - mediaValores) / desvioPadrao : 0.0;
+            if (Math.abs(zScore) >= Z_SCORE_LIMIAR_ANOMALIA) {
+                alertas.add(new AlertaDesvioPreditivo(
+                    "PICO_DESEMBOLSO_ANOMALO",
+                    String.format("Medição em %s (R$ %s) distorce a série temporal com Z-Score de %.2f (alerta de medição antecipada).",
+                        ponto.data(), ponto.valor(), zScore),
+                    "ALTO",
+                    ponto.data()
+                ));
+            }
+        }
+
+        // 3. Modelo Preditivo: Regressão Linear Simples sobre Acumulado (Y = a*X + b)
+        int n = historicoDesembolsos.size();
+        double sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+        double acumuladoAtual = 0.0;
+
+        for (int i = 0; i < n; i++) {
+            acumuladoAtual += historicoDesembolsos.get(i).valor().doubleValue();
+            double x = i + 1;
+            double y = acumuladoAtual;
+            sumX += x;
+            sumY += y;
+            sumXY += (x * y);
+            sumX2 += (x * x);
+        }
+
+        double inclinacao = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+        double intercepto = (sumY - inclinacao * sumX) / n;
+
+        // 4. Projeção dos Próximos Meses
+        List<PontoSerieTemporal> pontosProjetados = new ArrayList<>();
+        LocalDate ultimaData = historicoDesembolsos.get(n - 1).data();
+        double valorAcumuladoFinal = acumuladoAtual;
+
+        for (int m = 1; m <= mesesProjecao; m++) {
+            double xFuturo = n + m;
+            double yProjetado = inclinacao * xFuturo + intercepto;
+            double valorMensalEstimado = Math.max(0, yProjetado - valorAcumuladoFinal);
+            valorAcumuladoFinal = yProjetado;
+
+            LocalDate dataProjetada = ultimaData.plusMonths(m);
+            pontosProjetados.add(new PontoSerieTemporal(
+                dataProjetada,
+                BigDecimal.valueOf(valorMensalEstimado).setScale(2, RoundingMode.HALF_EVEN),
+                BigDecimal.valueOf(yProjetado).setScale(2, RoundingMode.HALF_EVEN)
+            ));
+        }
+
+        // 5. Avaliação do Risco de Estouro Orçamentário e Violação da Lei 14.133
+        BigDecimal totalProjetadoFinal = BigDecimal.valueOf(valorAcumuladoFinal).setScale(2, RoundingMode.HALF_EVEN);
+        boolean riscoEstouroContrato = totalProjetadoFinal.compareTo(valorContratado) > 0;
+        boolean estouroTetoLegalAditivos = totalProjetadoFinal.compareTo(limiteLegalAditivo) > 0;
+
+        if (estouroTetoLegalAditivos) {
+            alertas.add(new AlertaDesvioPreditivo(
+                "RISCO_CRITICO_TETO_ADITIVO",
+                String.format("Tendência de desembolso (R$ %s) ultrapassará o teto de 25%% de aditivos legais (R$ %s). Risco de paralisação e investigação pelo TCU.",
+                    totalProjetadoFinal, limiteLegalAditivo),
+                "CRITICO",
+                ultimaData.plusMonths(mesesProjecao)
+            ));
+        } else if (riscoEstouroContrato) {
+            alertas.add(new AlertaDesvioPreditivo(
+                "NECESSIDADE_ADITIVO_ORCAMENTARIO",
+                String.format("Contrato demandará aditivo de valor estimado em R$ %s para conclusão integral do objeto.",
+                    totalProjetadoFinal.subtract(valorContratado)),
+                "MEDIO",
+                ultimaData.plusMonths(mesesProjecao)
+            ));
+        }
+
+        double percentualConsumoEstimado = (totalProjetadoFinal.doubleValue() / valorContratado.doubleValue()) * 100.0;
+
+        return new ProjecaoDesembolsoResponse(
+                contrato.getId(),
+                contrato.getNumeroProcesso().valor(),
+                valorContratado,
+                limiteLegalAditivo,
+                totalProjetadoFinal,
+                percentualConsumoEstimado,
+                estouroTetoLegalAditivos ? "ALTO_RISCO_ILEGALIDADE" : (riscoEstouroContrato ? "ADITIVO_NECESSARIO" : "DENTRO_DO_ORCAMENTO"),
+                historicoDesembolsos,
+                pontosProjetados,
+                alertas
+        );
+    }
+
+    private ProjecaoDesembolsoResponse gerarProjecaoBaseLinear(
+            ContratoPendente c, 
+            BigDecimal valor, 
+            BigDecimal limiteAditivo, 
+            int meses
+    ) {
+        BigDecimal parcelaMensal = valor.divide(BigDecimal.valueOf(Math.max(1, meses)), 2, RoundingMode.HALF_EVEN);
+        List<PontoSerieTemporal> proj = new ArrayList<>();
+        LocalDate hoje = LocalDate.now();
+
+        BigDecimal acum = BigDecimal.ZERO;
+        for (int i = 1; i <= meses; i++) {
+            acum = acum.add(parcelaMensal);
+            proj.add(new PontoSerieTemporal(hoje.plusMonths(i), parcelaMensal, acum));
+        }
+
+        return new ProjecaoDesembolsoResponse(
+                c.getId(),
+                c.getNumeroProcesso().valor(),
+                valor,
+                limiteAditivo,
+                valor,
+                100.0,
+                "ESTIMATIVA_LINEAR_INICIAL",
+                List.of(new PontoSerieTemporal(hoje, BigDecimal.ZERO, BigDecimal.ZERO)),
+                proj,
+                List.of()
+        );
+    }
+}`
+  },
+  {
+    id: 'estatistica-dto',
+    name: 'IndicadoresEstatisticosGovDTO.java',
+    path: 'src/main/java/gov/audit/application/statistics/dto/IndicadoresEstatisticosGovDTO.java',
+    category: 'application',
+    language: 'java',
+    description: 'DTOs estatísticos para séries temporais, agrupamento comportamental (K-Means) de fornecedores e métricas de SLA administrativo.',
+    content: `package gov.audit.application.statistics.dto;
+
+import io.swagger.v3.oas.annotations.media.Schema;
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.List;
+import java.util.UUID;
+
+public record IndicadoresEstatisticosGovDTO(
+    @Schema(description = "Métricas de eficiência de processos e tempos médios (SLA)")
+    MetricasSlaProcessoDTO metricasSla,
+
+    @Schema(description = "Agrupamentos estatísticos de fornecedores")
+    List<ClusterFornecedorDTO> clustersFornecedores,
+
+    @Schema(description = "Taxa global de conformidade contratual apurada")
+    double taxaConformidadeGlobal
+) {}
+
+public record PontoSerieTemporal(
+    LocalDate data,
+    BigDecimal valor,
+    BigDecimal valorAcumulado
+) {}
+
+public record AlertaDesvioPreditivo(
+    String codigoAlerta,
+    String descricao,
+    String severidade,
+    LocalDate dataReferencia
+) {}
+
+public record ProjecaoDesembolsoResponse(
+    UUID contratoId,
+    String numeroProcesso,
+    BigDecimal valorOriginalContrato,
+    BigDecimal limiteLegalAditivo25Pct,
+    BigDecimal valorFinalProjetado,
+    double percentualConsumoEstimado,
+    String statusRiscoOrcamentario,
+    List<PontoSerieTemporal> historicoReal,
+    List<PontoSerieTemporal> projecaoFutura,
+    List<AlertaDesvioPreditivo> alertas
+) {}
+
+public record ClusterFornecedorDTO(
+    String clusterId,
+    String nomePerfil,
+    int quantidadeFornecedores,
+    double valorMedioContratos,
+    double taxaMediaAditivos,
+    String nivelRisco,
+    String acaoRecomendadaControle
+) {}
+
+public record MetricasSlaProcessoDTO(
+    double diasMediosElaboracao,
+    double diasMediosAnaliseJuridica,
+    double diasMediosVinculacaoEmpenho,
+    double diasMediosAprovacaoTribunal,
+    double diasTotaisCicloVidaMedio,
+    double taxaProcessosDentroSla
+) {}
+`
+  },
+  {
+    id: 'estatistica-controller',
+    name: 'EstatisticaGovController.java',
+    path: 'src/main/java/gov/audit/presentation/api/EstatisticaGovController.java',
+    category: 'presentation',
+    language: 'java',
+    description: 'REST Controller analítico: expõe endpoints para séries temporais de desembolso, clusterização de fornecedores e SLAs governamentais.',
+    content: `package gov.audit.presentation.api;
+
+import gov.audit.application.statistics.PrevisaoContratoTimeSeriesService;
+import gov.audit.application.statistics.dto.*;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * CONTROLADOR REST: Painel Analítico e Estatística Governamental
+ */
+@RestController
+@RequestMapping("/api/v1/estatisticas")
+@Tag(name = "Estatísticas & Séries Temporais", description = "Endpoints de predição de desembolso, clusterização de fornecedores e SLAs")
+public class EstatisticaGovController {
+
+    private final PrevisaoContratoTimeSeriesService timeSeriesService;
+
+    public EstatisticaGovController(PrevisaoContratoTimeSeriesService timeSeriesService) {
+        this.timeSeriesService = timeSeriesService;
+    }
+
+    @GetMapping("/contratos/{contratoId}/projecao-desembolso")
+    @Operation(
+        summary = "Calcular projeção temporal de desembolso e risco de aditivo",
+        description = "Analisa a série temporal de pagamentos, projeta curva acumulada por regressão linear e verifica se há risco de estouro do limite de 25% (Art. 125 Lei 14.133)."
+    )
+    public ResponseEntity<ProjecaoDesembolsoResponse> obterProjecaoTemporal(
+            @PathVariable UUID contratoId,
+            @RequestParam(defaultValue = "6") int mesesProjetados
+    ) {
+        // Amostra de série temporal para o contrato
+        LocalDate base = LocalDate.now().minusMonths(4);
+        List<PontoSerieTemporal> historicoAmostra = List.of(
+            new PontoSerieTemporal(base, BigDecimal.valueOf(18500.00), BigDecimal.valueOf(18500.00)),
+            new PontoSerieTemporal(base.plusMonths(1), BigDecimal.valueOf(19200.00), BigDecimal.valueOf(37700.00)),
+            new PontoSerieTemporal(base.plusMonths(2), BigDecimal.valueOf(38000.00), BigDecimal.valueOf(75700.00)), // Ponto anômalo de pico
+            new PontoSerieTemporal(base.plusMonths(3), BigDecimal.valueOf(21000.00), BigDecimal.valueOf(96700.00))
+        );
+
+        ProjecaoDesembolsoResponse response = timeSeriesService.calcularProjecaoContrato(
+            contratoId, 
+            historicoAmostra, 
+            mesesProjetados
+        );
+
+        return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/fornecedores/clusters")
+    @Operation(
+        summary = "Obter agrupamentos comportamentais de fornecedores (Clusterização)",
+        description = "Retorna clusters estatísticos identificando padrões anômalos de repetição de aditivos ou hiperconcentração."
+    )
+    public ResponseEntity<List<ClusterFornecedorDTO>> obterClustersFornecedores() {
+        List<ClusterFornecedorDTO> clusters = List.of(
+            new ClusterFornecedorDTO(
+                "CLUSTER-01",
+                "Fornecedores de Alta Regularidade (Padrão)",
+                142,
+                450000.00,
+                4.2,
+                "BAIXO",
+                "Manter fiscalização amostral rotineira"
+            ),
+            new ClusterFornecedorDTO(
+                "CLUSTER-02",
+                "Fornecedores com Volume Moderado e Aditivos Recorrentes",
+                28,
+                890000.00,
+                18.7,
+                "MEDIO",
+                "Auditar justificativas de reequilíbrio econômico-financeiro"
+            ),
+            new ClusterFornecedorDTO(
+                "CLUSTER-03",
+                "Anomalia de Comportamento: Risco de Sobrepreço / Aditivos Excessivos",
+                6,
+                2400000.00,
+                24.8,
+                "CRITICO",
+                "Acionar auditoria especial concomitante e comunicar o Tribunal de Contas"
+            )
+        );
+
+        return ResponseEntity.ok(clusters);
+    }
+
+    @GetMapping("/governanca/sla-processos")
+    @Operation(
+        summary = "Painel de métricas analíticas de governança e SLAs de tramitação",
+        description = "Retorna tempos médios de cada fase do ciclo de vida para suporte à tomada de decisão de gestores públicos."
+    )
+    public ResponseEntity<MetricasSlaProcessoDTO> obterMetricasSla() {
+        MetricasSlaProcessoDTO sla = new MetricasSlaProcessoDTO(
+            14.2, // Dias médios em Elaboração
+            8.5,  // Dias médios na Análise Jurídica
+            3.1,  // Dias médios na Vinculação de Empenho
+            12.4, // Dias médios na Aprovação pelo Tribunal de Contas
+            38.2, // Dias totais do ciclo preparatório
+            87.4  // 87.4% dos processos dentro do SLA regulamentar
+        );
+
+        return ResponseEntity.ok(sla);
+    }
+}
+`
   }
 ];
+
+
 
