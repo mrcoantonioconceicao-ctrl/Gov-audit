@@ -195,6 +195,29 @@ export const CODE_FILES: CodeFile[] = [
         </dependency>
 
         <!-- =============================================================== -->
+        <!-- OBSERVABILIDADE, MÉTRICAS & TRACING (Micrometer & OpenTelemetry)-->
+        <!-- =============================================================== -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-api</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
+
+        <!-- =============================================================== -->
         <!-- PRODUTIVIDADE & MAPEAMENTO (Lombok & MapStruct)                  -->
         <!-- =============================================================== -->
         <dependency>
@@ -2619,8 +2642,268 @@ public class EstatisticaGovController {
     }
 }
 `
+  },
+  {
+    id: 'readme-commit',
+    name: 'README.md (Documentação & Stacks)',
+    path: 'README.md',
+    category: 'config',
+    language: 'markdown',
+    description: 'Documentação exaustiva do projeto, detalhamento completo das linguagens utilizadas, arquitetura DDD, motor BPMN, IA e guia de execução.',
+    content: `# GovAudit — Sistema Corporativo de Auditoria de Contratos e Governança Pública
+Plataforma de Missão Crítica sob a Lei Federal nº 14.133/2021.
+
+## 1. Linguagens & Tecnologias Utilizadas:
+- Java 17 LTS / 21: Backend corporativo, Domain-Driven Design (DDD), Spring Boot 3.3.4, Spring Data JPA, ArchUnit e Testcontainers.
+- SQL (PostgreSQL 16): Banco relacional com integridade referencial ACID e Flyway Migrations.
+- Dockerfile & YAML: Multi-stage build com JRE 17 Alpine, usuário non-root e docker-compose.
+- XML: Compilação e gestão de dependências via Apache Maven (pom.xml).
+- TypeScript & React 19: Interface web, simulador BPMN e painel de séries temporais com Tailwind CSS v4.
+- JSONL & JSON: Model Context Protocol (MCP) e datasets de Fine-Tuning de LLMs em conformidade pública.
+
+## 2. Módulos Implementados:
+- DDD Core: Aggregate Root ContratoPendente, Value Objects (Cnpj com DV oficial, ValorMonetario, NumeroProcesso SEI).
+- Motor BPMN: Ciclo de vida em 5 estágios (Elaboração -> Jurídico -> Empenho -> Tribunal -> Vigência).
+- IA Avançada: AST Parser de minutas, GraphRAG ligando CEIS/CNEP e TCU, e MCP.
+- Estatística Preditiva: Regressão Linear, Z-Score (anomalias), risco de aditivo de 25% (Art. 125) e clusters K-Means.`
+  },
+  {
+    id: 'observability-service',
+    name: 'AuditoriaObservabilityService.java',
+    path: 'src/main/java/gov/audit/infrastructure/observability/AuditoriaObservabilityService.java',
+    category: 'infrastructure',
+    language: 'java',
+    description: 'Serviço de Observabilidade Corporativa com Micrometer (Métricas Dimensionais) e OpenTelemetry (Tracing Distribuído) para monitorar latência, tokens e gargalos do pipeline de IA e auditoria.',
+    content: `package gov.audit.infrastructure.observability;
+
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.DistributionSummary;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+
+import java.math.BigDecimal;
+import java.time.Duration;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.function.Supplier;
+
+/**
+ * SERVIÇO DE OBSERVABILIDADE CORPORATIVA (MICROMETER & OPENTELEMETRY)
+ * 
+ * Centraliza a telemetria do sistema GovAudit:
+ *  1. Métricas Dimensionais (Micrometer):
+ *     - Latência do pipeline (p50, p95, p99) para AST, GraphRAG e LLM.
+ *     - Contadores de contratos auditados e irregularidades fiscais detectadas.
+ *     - Distribuição de tokens de IA consumidos (Prompt vs. Completion).
+ *     - Histogramas de scores de conformidade emitidos.
+ * 
+ *  2. Rastreamento Distribuído (OpenTelemetry):
+ *     - Spans com contexto hierárquico (Parent: Auditoria -> Child: AST -> Child: GraphRAG -> Child: MCP).
+ *     - Atributos semânticos padronizados do governo e OpenTelemetry GenAI Conventions.
+ */
+@Service
+public class AuditoriaObservabilityService {
+
+    private static final Logger log = LoggerFactory.getLogger(AuditoriaObservabilityService.class);
+
+    private final MeterRegistry meterRegistry;
+    private final Tracer tracer;
+
+    // Métricas Pré-Registradas do Micrometer
+    private final Counter counterAuditoriasIniciadas;
+    private final DistributionSummary summaryScoreConformidade;
+    private final DistributionSummary summaryTokensPrompt;
+    private final DistributionSummary summaryTokensCompletion;
+
+    public AuditoriaObservabilityService(MeterRegistry meterRegistry, Tracer tracer) {
+        this.meterRegistry = meterRegistry;
+        this.tracer = tracer;
+
+        this.counterAuditoriasIniciadas = Counter.builder("govaudit.auditoria.iniciadas.total")
+                .description("Total de auditorias de contratos públicas submetidas")
+                .tag("service", "gov-audit-core")
+                .register(meterRegistry);
+
+        this.summaryScoreConformidade = DistributionSummary.builder("govaudit.auditoria.score.distribuicao")
+                .description("Distribuição dos índices de conformidade regulatória emitidos (0 a 100)")
+                .minimumExpectedValue(0.0)
+                .maximumExpectedValue(100.0)
+                .publishPercentiles(0.5, 0.75, 0.95, 0.99)
+                .register(meterRegistry);
+
+        this.summaryTokensPrompt = DistributionSummary.builder("govaudit.ai.tokens.prompt")
+                .description("Distribuição de tokens de entrada enviados no prompt ao modelo LLM")
+                .register(meterRegistry);
+
+        this.summaryTokensCompletion = DistributionSummary.builder("govaudit.ai.tokens.completion")
+                .description("Distribuição de tokens de saída gerados pelo modelo LLM")
+                .register(meterRegistry);
+    }
+
+    // =========================================================================
+    // 1. RASTREAMENTO DISTRIBUÍDO VIA OPENTELEMETRY (SPANS & CONTEXTO)
+    // =========================================================================
+
+    /**
+     * Inicia o Span raiz de uma auditoria completa de contrato público.
+     */
+    public Span iniciarSpanAuditoriaRaiz(UUID contratoId, String processo, String cnpj, BigDecimal valorGlobal) {
+        Span span = tracer.spanBuilder("govaudit.auditoria.processamento")
+                .setSpanKind(SpanKind.SERVER)
+                .setAttribute(AttributeKey.stringKey("govaudit.contrato.id"), contratoId.toString())
+                .setAttribute(AttributeKey.stringKey("govaudit.contrato.processo"), processo)
+                .setAttribute(AttributeKey.stringKey("govaudit.contrato.cnpj"), cnpj)
+                .setAttribute(AttributeKey.doubleKey("govaudit.contrato.valor"), valorGlobal.doubleValue())
+                .startSpan();
+
+        this.counterAuditoriasIniciadas.increment();
+        return span;
+    }
+
+    /**
+     * Executa uma etapa do pipeline dentro de um Span aninhado do OpenTelemetry,
+     * medindo a duração via Timer do Micrometer simultaneamente.
+     */
+    public <T> T executarComRastreamento(
+            String nomeOperacao, 
+            String metricaTimerNome, 
+            Map<String, String> tagsMicrometer, 
+            Supplier<T> blocoExecucao
+    ) {
+        Span childSpan = tracer.spanBuilder(nomeOperacao)
+                .setSpanKind(SpanKind.INTERNAL)
+                .startSpan();
+
+        Timer.Sample sample = Timer.start(meterRegistry);
+
+        try (Scope scope = childSpan.makeCurrent()) {
+            T resultado = blocoExecucao.get();
+            childSpan.setStatus(StatusCode.OK);
+            return resultado;
+        } catch (Exception ex) {
+            childSpan.setStatus(StatusCode.ERROR, ex.getMessage());
+            childSpan.recordException(ex);
+            log.error("[OBSERVABILITY] Falha na operação {} no trace {}", nomeOperacao, childSpan.getSpanContext().getTraceId(), ex);
+            throw ex;
+        } finally {
+            // Registra tempo no Micrometer
+            Timer.Builder timerBuilder = Timer.builder(metricaTimerNome)
+                    .publishPercentiles(0.5, 0.95, 0.99);
+            tagsMicrometer.forEach(timerBuilder::tag);
+            sample.stop(timerBuilder.register(meterRegistry));
+
+            childSpan.end();
+        }
+    }
+
+    // =========================================================================
+    // 2. MÉTRICAS ESPECIALIZADAS DO PIPELINE DE IA (MICROMETER)
+    // =========================================================================
+
+    /**
+     * Registra telemetria específica da análise estática de minuta (AST).
+     */
+    public void registrarMetricasAst(int totalClausulas, int totalDesvios, Duration duracao) {
+        Timer.builder("govaudit.ai.ast.duracao")
+                .description("Tempo de execução do analisador sintático de minutas")
+                .register(meterRegistry)
+                .record(duracao);
+
+        Counter.builder("govaudit.ai.ast.clausulas.analisadas.total")
+                .register(meterRegistry)
+                .increment(totalClausulas);
+
+        Counter.builder("govaudit.ai.ast.desvios.detectados.total")
+                .tag("severidade", totalDesvios > 0 ? "COM_DESVIOS" : "SEM_DESVIOS")
+                .register(meterRegistry)
+                .increment(totalDesvios);
+    }
+
+    /**
+     * Registra telemetria do componente de travessia GraphRAG.
+     */
+    public void registrarMetricasGraphRag(int totalAcordaosTcu, int totalAlertasSancao, Duration duracao) {
+        Timer.builder("govaudit.ai.graphrag.duracao")
+                .description("Tempo de travessia do subgrafo de antecedentes e jurisprudência")
+                .register(meterRegistry)
+                .record(duracao);
+
+        Counter.builder("govaudit.ai.graphrag.acordaos.recuperados.total")
+                .register(meterRegistry)
+                .increment(totalAcordaosTcu);
+
+        if (totalAlertasSancao > 0) {
+            Counter.builder("govaudit.ai.graphrag.sancoes.ceis.detectadas.total")
+                    .register(meterRegistry)
+                    .increment(totalAlertasSancao);
+        }
+    }
+
+    /**
+     * Registra consumo de tokens e latência de inferência do agente de IA (Protocolo MCP).
+     */
+    public void registrarMetricasInferenciaIa(
+            String modeloNome, 
+            int tokensPrompt, 
+            int tokensCompletion, 
+            Duration latenciaInferencia, 
+            double scoreConformidadeFinal
+    ) {
+        Timer.builder("govaudit.ai.llm.inferencia.duracao")
+                .tag("model", modeloNome)
+                .publishPercentiles(0.5, 0.95, 0.99)
+                .register(meterRegistry)
+                .record(latenciaInferencia);
+
+        summaryTokensPrompt.record(tokensPrompt);
+        summaryTokensCompletion.record(tokensCompletion);
+        summaryScoreConformidade.record(scoreConformidadeFinal);
+
+        // Anotações semânticas no Span atual do OpenTelemetry (GenAI Semantic Conventions)
+        Span spanAtual = Span.current();
+        if (spanAtual.isRecording()) {
+            spanAtual.setAttribute("gen_ai.system", "gov-audit-mcp");
+            spanAtual.setAttribute("gen_ai.request.model", modeloNome);
+            spanAtual.setAttribute("gen_ai.usage.prompt_tokens", (long) tokensPrompt);
+            spanAtual.setAttribute("gen_ai.usage.completion_tokens", (long) tokensCompletion);
+            spanAtual.setAttribute("gen_ai.response.score", scoreConformidadeFinal);
+        }
+    }
+
+    /**
+     * Incrementa o contador de encerramento da auditoria com o parecer final emitido.
+     */
+    public void registrarConclusaoAuditoria(String resultadoParecer, String modalidade, Span spanRaiz) {
+        Counter.builder("govaudit.auditoria.concluidas.total")
+                .tag("resultado", resultadoParecer)
+                .tag("modalidade", modalidade)
+                .register(meterRegistry)
+                .increment();
+
+        if (spanRaiz != null) {
+            spanRaiz.setAttribute("govaudit.parecer.resultado", resultadoParecer);
+            spanRaiz.setStatus(StatusCode.OK);
+            spanRaiz.end();
+        }
+    }
+}
+`
   }
 ];
+
+
+
 
 
 

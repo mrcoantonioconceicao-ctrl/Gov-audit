@@ -16,7 +16,8 @@ import {
   Database,
   GitCommit,
   Sparkles,
-  TrendingUp
+  TrendingUp,
+  Radio
 } from 'lucide-react';
 import { CODE_FILES, DIRECTORY_TREE_ASCII } from './data/govAuditCode';
 import { CodeViewer } from './components/CodeViewer';
@@ -25,9 +26,10 @@ import { ContractSimulator } from './components/ContractSimulator';
 import { BpmnWorkflowViewer } from './components/BpmnWorkflowViewer';
 import { AiAuditLab } from './components/AiAuditLab';
 import { StatisticalTimeSeriesLab } from './components/StatisticalTimeSeriesLab';
+import { ObservabilityLab } from './components/ObservabilityLab';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<string>('stats');
+  const [activeTab, setActiveTab] = useState<string>('observability');
   const [selectedFileId, setSelectedFileId] = useState<string>('contrato-pendente');
   const [copiedTree, setCopiedTree] = useState(false);
 
@@ -83,6 +85,18 @@ export default function App() {
 
         {/* Navigation Tabs */}
         <div className="max-w-7xl mx-auto px-4 sm:px-6 flex items-center gap-1 overflow-x-auto text-xs font-medium border-t border-slate-800/60 pt-1 pb-1 scrollbar-none">
+          <button
+            onClick={() => setActiveTab('observability')}
+            className={`px-3 py-2 rounded-lg transition-colors flex items-center gap-2 whitespace-nowrap ${
+              activeTab === 'observability'
+                ? 'bg-emerald-950 text-emerald-300 font-semibold border border-emerald-800'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+            }`}
+          >
+            <Radio className="w-4 h-4 text-emerald-400" />
+            <span>Observabilidade &amp; OTel</span>
+          </button>
+
           <button
             onClick={() => setActiveTab('stats')}
             className={`px-3 py-2 rounded-lg transition-colors flex items-center gap-2 whitespace-nowrap ${
@@ -234,6 +248,11 @@ export default function App() {
               </div>
             </div>
           </div>
+        )}
+
+        {/* TAB OBSERVABILITY: TELEMETRIA, MICROMETER & OPENTELEMETRY */}
+        {activeTab === 'observability' && (
+          <ObservabilityLab />
         )}
 
         {/* TAB STATS: SÉRIES TEMPORAIS & ESTATÍSTICA */}
