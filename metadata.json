@@ -1,0 +1,6 @@
+{
+  "name": "GovAudit - Arquitetura DDD & Hub de Engenharia",
+  "description": "Blueprint arquitetural, templates de configuração (pom.xml, Dockerfile, docker-compose) e modelos de domínio DDD para o Sistema de Auditoria de Contratos Governamentais.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
